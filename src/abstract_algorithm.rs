@@ -3,6 +3,26 @@
 use lambda_calculus::{*};
 use self::Term::{*};
 
+/*
+ * Variables:
+ *      active - Couter wich shows how many secondary threads are active
+ *
+ * Semaphores:
+ *      WARP_QUEUE - says if there is any information in the "warp" vector
+ *
+ * Mutexes:
+ *      WARP_EDIT
+ *      NET_EDIT - For now, only 1 for the whole graph. Can be changed to many in the future
+ *      NET_REUSE
+ *      STATS
+ *      ACTIVE - Mutex to increment or decrement the "active" variable
+ *
+ * Observations:
+ *      - Probably we are going to need another technique to prevent threads from
+ *        reading while others are writing
+ */
+
+
 #[derive(Clone, Debug)]
 pub struct Stats {
     loops: u32,
@@ -18,22 +38,31 @@ pub struct Net {
     pub reuse: Vec<u32>
 }
 
-
 type Port = u32;
 
 fn new_node(net : &mut Net, kind : u32) -> u32 {
-    let node : u32 = match net.reuse.pop() {
+    // fetch NET_REUSE mutex
+    let reuse = net.reuse.pop();
+    // release NET_REUSE mutex
+
+    let node : u32 = match reuse {
         Some(index) => index,
         None        => {
             let len = net.nodes.len();
+            // fetch NET_EDIT mutex
             net.nodes.resize(len + 4, 0);
+            // release NET_EDIT mutex
             (len as u32) / 4
         }
     };
+
+    // fetch NET_EDIT mutex
     net.nodes[(node * 4 + 0) as usize] = node * 4 + 0;
     net.nodes[(node * 4 + 1) as usize] = node * 4 + 1;
     net.nodes[(node * 4 + 2) as usize] = node * 4 + 2;
     net.nodes[(node * 4 + 3) as usize] = kind << 2;
+    // release NET_EDIT mutex
+
     return node;
 }
 
@@ -161,24 +190,43 @@ pub fn reduce(net : &mut Net) -> Stats {
     let mut next : Port = net.nodes[0];
     let mut prev : Port;
     let mut back : Port;
-    while (next > 0) || (warp.len() > 0) {
-        if !(next > 0) {
-            next = enter_port(net, port(warp.pop().unwrap(), 2));
+    while (next > 0) || (warp.len() > 0) || (active > 0) {
+        if (next == 0) {
+            if (warp.len() == 0) {
+                continue;
+            } else {
+                // fetch WARP_EDIT mutex
+                let warp_node = warp.pop();
+                // release WARP_EDIT mutex
+                next = match warp_node {
+                    Some(index) => enter_port(net, port(index, 2)),
+                    None        => continue
+                };
+            }
         }
         prev = enter_port(net, next);
         next = enter_port(net, prev);
         if get_port_slot(next) == 0 && get_port_slot(prev) == 0 && get_port_node(prev) != 0 {
+            // fetch STATS mutex
             stats.rules = stats.rules + 1;
+            // release STATS mutex
+
             back = enter_port(net, port(get_port_node(prev), get_node_meta(net, get_port_node(prev))));
             rewrite(net, get_port_node(prev), get_port_node(next));
             next = enter_port(net, back);
         } else if get_port_slot(next) == 0 {
+            // fetch WARP_EDIT mutex
             warp.push(get_port_node(next));
+            // release WARP_EDIT Mutex
+            // signal WARP_QUEUE semaphore
             next = enter_port(net, port(get_port_node(next), 1));
         } else {
+            // fetch NET_EDIT mutex
             set_node_meta(net, get_port_node(next), get_port_slot(next));
+            // release NET_EDIT mutex
             next = enter_port(net, port(get_port_node(next), 0));
         }
+
         stats.loops = stats.loops + 1;
     }
     stats
@@ -186,32 +234,92 @@ pub fn reduce(net : &mut Net) -> Stats {
 
 fn rewrite(net : &mut Net, x : Port, y : Port) {
     if get_node_kind(net, x) == get_node_kind(net, y) {
-        let p0 = enter_port(net, port(x, 1));
-        let p1 = enter_port(net, port(y, 1));
-        link(net, p0, p1);
-        let p0 = enter_port(net, port(x, 2));
-        let p1 = enter_port(net, port(y, 2));
-        link(net, p0, p1);
+        let px1 = enter_port(net, port(x, 1));
+        let py1 = enter_port(net, port(y, 1));
+
+        let px2 = enter_port(net, port(x, 2));
+        let py2 = enter_port(net, port(y, 2));
+
+        // fetch NET_EDIT mutex
+        link(net, px1, py1);
+        link(net, px2, py2);
+        // release NET_EDIT mutex
+
+        // fetch NET_REUSE mutex
         net.reuse.push(x);
         net.reuse.push(y);
+        // release NET_REUSE mutex
+
     } else {
+        // add new nodes
         let t = get_node_kind(net, x);
         let a = new_node(net, t);
         let t = get_node_kind(net, y);
         let b = new_node(net, t);
-        let t = enter_port(net, port(x, 1));
-        link(net, port(b, 0), t);
-        let t = enter_port(net, port(x, 2));
-        link(net, port(y, 0), t);
-        let t = enter_port(net, port(y, 1));
-        link(net, port(a, 0), t);
-        let t = enter_port(net, port(y, 2));
-        link(net, port(x, 0), t);
+
+
+        let px1 = enter_port(net, port(x, 1));
+        let px2 = enter_port(net, port(x, 2));
+        let py1 = enter_port(net, port(y, 1));
+        let py2 = enter_port(net, port(y, 2));
+
+        // fetch NET_EDIT mutex
+        link(net, port(b, 0), px1);
+        link(net, port(y, 0), px2);
+        link(net, port(a, 0), py1);
+        link(net, port(x, 0), py2);
+
         link(net, port(a, 1), port(b, 1));
         link(net, port(a, 2), port(y, 1));
         link(net, port(x, 1), port(b, 2));
         link(net, port(x, 2), port(y, 2));
+
         set_node_meta(net, x, 0);
         set_node_meta(net, y, 0);
+        // release NET_EDIT mutex
     }
+}
+
+fn thread_alg(net: &mut Net, next: u32, prev: u32, back: u32, warp: &mut Vec<u32>, stats: &mut Stats, active: &mut u32) {
+    while(true){
+        // wait on WARP_QUEUE semaphore
+        // fetch ACTIVE mutex
+        active = active + 1;
+        // release ACTIVE mutex
+        while (next > 0) || (warp.len() > 0) {
+            // fetch  WARP_EDIT mutex
+            if (next == 0) && (warp.len() > 0) {
+                next = enter_port(net, port(warp.pop().unwrap(), 2));
+            }
+            // release WARP_EDIT mutex
+            prev = enter_port(net, next);
+            next = enter_port(net, prev);
+
+            if get_port_slot(next) == 0 && get_port_slot(prev) == 0 && get_port_node(prev) != 0 {
+                // fetch STATS mutex
+                stats.rules = stats.rules + 1;
+                // release STATS mutex
+                back = enter_port(net, port(get_port_node(prev), get_node_meta(net, get_port_node(prev))));
+                rewrite(net, get_port_node(prev), get_port_node(next));
+                next = enter_port(net, back);
+            } else if get_port_slot(next) == 0 {
+                // fetch WARP_EDIT mutex
+                warp.push(get_port_node(next));
+                // release WARP_EDIT semaphore
+                // signal WARP_QUEUE semaphore
+                next = enter_port(net, port(get_port_node(next), 1));
+            } else {
+                // fetch NET_EDIT(node(next)) mutex
+                set_node_meta(net, get_port_node(next), get_port_slot(next));
+                next = enter_port(net, port(get_port_node(next), 0));
+            }
+            // fetch STATS mutex
+            stats.loops = stats.loops + 1;
+            // release STATS mutex
+        }
+        // fetch ACTIVE mutex
+        active = active - 1;
+        // release ACTIVE mutex
+    }
+
 }
