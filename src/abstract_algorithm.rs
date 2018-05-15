@@ -1,27 +1,38 @@
 #![allow(dead_code)]
 
+use std::sync::{Arc, Mutex};
+use std::thread;
 use lambda_calculus::{*};
+use simple_semaphore::{*};
 use self::Term::{*};
 
 /*
  * Variables:
  *      active - Couter wich shows how many secondary threads are active
  *
- * Semaphores:
+ * Semaphores (deprecated on Rust v1.70) (Use simple_semaphore instead):
  *      WARP_QUEUE - says if there is any information in the "warp" vector
  *
  * Mutexes:
  *      WARP_EDIT
- *      NET_EDIT - For now, only 1 for the whole graph. Can be changed to many in the future
  *      NET_REUSE
  *      STATS
  *      ACTIVE - Mutex to increment or decrement the "active" variable
  *
- * Observations:
- *      - Probably we are going to need another technique to prevent threads from
- *        reading while others are writing
+ * RwLocks (Allows many reades but only 1 writer):
+ *      NET_ACCESS - For now, only 1 for the whole graph.
+ *                   Can be changed to many in the future.
+ *
  */
 
+static mut active_threads: u32 = 0;
+
+let WARP_QUEUE  = Semaphore::new(0);
+let WARP_EDIT   = Mutex::new(());
+let NET_REUSE   = Mutex::new(());
+let STATS       = Mutex::new(());
+let ACTIVE      = Mutex::new(());
+let NET_ACCESS  = RwLock::new(());
 
 #[derive(Clone, Debug)]
 pub struct Stats {
