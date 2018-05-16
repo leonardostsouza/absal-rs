@@ -11,7 +11,7 @@ pub struct Semaphore {
 
 impl Semaphore {
     pub fn new(init_val: isize) -> Semaphore {
-        return Semaphore {
+        Semaphore {
             mutex: Mutex::new(init_val),
             condvar: Condvar::new(),
         }

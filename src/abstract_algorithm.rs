@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use lambda_calculus::{*};
 use simple_semaphore::{*};
@@ -25,15 +25,6 @@ use self::Term::{*};
  *
  */
 
-static mut active_threads: u32 = 0;
-
-let WARP_QUEUE  = Semaphore::new(0);
-let WARP_EDIT   = Mutex::new(());
-let NET_REUSE   = Mutex::new(());
-let STATS       = Mutex::new(());
-let ACTIVE      = Mutex::new(());
-let NET_ACCESS  = RwLock::new(());
-
 #[derive(Clone, Debug)]
 pub struct Stats {
     loops: u32,
@@ -45,8 +36,8 @@ pub struct Stats {
 
 #[derive(Clone, Debug)]
 pub struct Net {
-    pub nodes: Vec<u32>,
-    pub reuse: Vec<u32>
+    pub nodes: RwLock<Vec<u32>>,
+    pub reuse: Mutex<Vec<u32>>
 }
 
 type Port = u32;
@@ -196,12 +187,40 @@ pub fn from_net(net : &Net) -> Term {
 }
 
 pub fn reduce(net : &mut Net) -> Stats {
-    let mut stats = Stats { loops: 0, rules: 0, betas: 0, dupls: 0, annis: 0 };
-    let mut warp: Vec<u32> = Vec::new();
+    //let mut stats = Stats { loops: 0, rules: 0, betas: 0, dupls: 0, annis: 0 };
+    //let mut warp: Vec<u32> = Vec::new();
     let mut next : Port = net.nodes[0];
     let mut prev : Port;
     let mut back : Port;
-    while (next > 0) || (warp.len() > 0) || (active > 0) {
+
+    let mut handles = Vec::new();
+
+    // Sync primitives
+    //let mut active_threads: u32 = 0;
+    let warp: Arc<Mutex<Vec<u32>>>  = Arc::new(Mutex::new(Vec::new()));
+    let warp_queue  = Arc::new(Semaphore::new(0));
+    let stats: Arc<Mutex<Stats>>    = Arc::new(Mutex::new(Stats {
+        loops: 0,
+        rules: 0,
+        betas: 0,
+        dupls: 0,
+        annis: 0
+    }));
+    let active_threads: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+
+    // spawn threads
+    for _ in 0..3 {
+        let warp = Arc::clone(&warp);
+        let warp_queue = Arc::clone(&warp_queue);
+        let stats = Arc::clone(&stats);
+        let active_threads = Arc::clone(&active_threads);
+
+        thread::spawn(move || {
+            thread_alg(net, next, prev, back, &warp, &warp_queue, &stats, &mut active_threads);
+        });
+    }
+
+    while (next > 0) || (warp.len() > 0) || (active_threads > 0) {
         if (next == 0) {
             if (warp.len() == 0) {
                 continue;
@@ -291,11 +310,14 @@ fn rewrite(net : &mut Net, x : Port, y : Port) {
     }
 }
 
-fn thread_alg(net: &mut Net, next: u32, prev: u32, back: u32, warp: &mut Vec<u32>, stats: &mut Stats, active: &mut u32) {
-    while(true){
+fn thread_alg(net: &mut Net, _next: u32, _prev: u32, _back: u32, warp: &mut Vec<u32>, stats: &mut Stats, active: &mut u32) {
+    let mut next = _next;
+    let mut prev = _prev;
+    let mut back = _back;
+    loop {
         // wait on WARP_QUEUE semaphore
         // fetch ACTIVE mutex
-        active = active + 1;
+        *active = *active + 1;
         // release ACTIVE mutex
         while (next > 0) || (warp.len() > 0) {
             // fetch  WARP_EDIT mutex
@@ -329,7 +351,7 @@ fn thread_alg(net: &mut Net, next: u32, prev: u32, back: u32, warp: &mut Vec<u32
             // release STATS mutex
         }
         // fetch ACTIVE mutex
-        active = active - 1;
+        *active = *active - 1;
         // release ACTIVE mutex
     }
 
