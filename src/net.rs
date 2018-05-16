@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use simple_semaphore::*;
 
+const MULTITHREADING: bool = true;
+
 #[derive(Clone, Debug)]
 pub struct Stats {
     pub loops: u32,
@@ -19,7 +21,7 @@ pub struct Net {
     pub reuse: Vec<u32>
 }
 
-struct ReduceLocks {
+pub struct Locks {
     warp: Mutex<Vec<u32>>,
     warp_queue: Semaphore,
     stats: Mutex<Stats>,
@@ -27,9 +29,9 @@ struct ReduceLocks {
     net: Mutex<()>
 }
 
-impl ReduceLocks {
-    pub fn new() -> ReduceLocks {
-        ReduceLocks {
+impl Locks {
+    pub fn new() -> Locks {
+        Locks {
             warp: Mutex::new(Vec::new()),
             warp_queue: Semaphore::new(0),
             stats: Mutex::new(Stats {
@@ -47,26 +49,37 @@ impl ReduceLocks {
 
 pub type Port = u32;
 
-pub fn new_node(net : &mut Net, kind : u32) -> u32 {
+pub fn new_node(net : &mut Net, kind : u32, _locks: Option<Arc<Locks>>) -> u32 {
+    let locks = match _locks {
+        Some(input) => input,
+        None => Arc::new(Locks::new())
+    };
+
     // fetch NET_REUSE mutex
+    let net_lock = locks.net.lock().unwrap();
     let reuse = net.reuse.pop();
-    // release NET_REUSE mutex
+    drop(net_lock);
+    // NET_REUSE mutex released
 
     let node : u32 = match reuse {
         Some(index) => index,
         None        => {
             let len = net.nodes.len();
             // fetch NET_EDIT mutex
+            let net_edit = locks.net.lock().unwrap();
             net.nodes.resize(len + 4, 0);
-            // release NET_EDIT mutex
+            drop(net_edit);
+            // NET_EDIT mutex released
             (len as u32) / 4
         }
     };
     // fetch NET_EDIT mutex
+    let net_edit = locks.net.lock().unwrap();
     net.nodes[port(node, 0) as usize] = port(node, 0);
     net.nodes[port(node, 1) as usize] = port(node, 1);
     net.nodes[port(node, 2) as usize] = port(node, 2);
     net.nodes[port(node, 3) as usize] = kind << 2;
+    drop(net_edit);
     // release NET_EDIT mutex
     return node;
 }
@@ -111,7 +124,7 @@ pub fn reduce(net : &mut Net) -> Stats {
     let mut next : Port = net.nodes[0];
     let mut prev : Port;
     let mut back : Port;
-    let locks = Arc::new(ReduceLocks::new());
+    let locks = Arc::new(Locks::new());
 
     while (next > 0) || (warp.len() > 0) {
         next = if next == 0 { enter(net, port(warp.pop().unwrap(), 2)) } else { next };
@@ -145,9 +158,9 @@ pub fn rewrite(net : &mut Net, x : Port, y : Port) {
         net.reuse.push(y);
     } else {
         let t = kind(net, x);
-        let a = new_node(net, t);
+        let a = new_node(net, t, None); // <-------- Should receive Some(lock)!
         let t = kind(net, y);
-        let b = new_node(net, t);
+        let b = new_node(net, t, None); // <-------- Should receive Some(lock)!
         let t = enter(net, port(x, 1));
         link(net, port(b, 0), t);
         let t = enter(net, port(x, 2));
