@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
+use simple_semaphore::*;
+
 #[derive(Clone, Debug)]
 pub struct Stats {
     pub loops: u32,
@@ -15,21 +19,55 @@ pub struct Net {
     pub reuse: Vec<u32>
 }
 
+struct ReduceLocks {
+    warp: Mutex<Vec<u32>>,
+    warp_queue: Semaphore,
+    stats: Mutex<Stats>,
+    active_threads: Mutex<u32>,
+    net: Mutex<()>
+}
+
+impl ReduceLocks {
+    pub fn new() -> ReduceLocks {
+        ReduceLocks {
+            warp: Mutex::new(Vec::new()),
+            warp_queue: Semaphore::new(0),
+            stats: Mutex::new(Stats {
+                loops: 0,
+                rules: 0,
+                betas: 0,
+                dupls: 0,
+                annis: 0
+            }),
+            active_threads: Mutex::new(0),
+            net: Mutex::new(())
+        }
+    }
+}
+
 pub type Port = u32;
 
 pub fn new_node(net : &mut Net, kind : u32) -> u32 {
-    let node : u32 = match net.reuse.pop() {
+    // fetch NET_REUSE mutex
+    let reuse = net.reuse.pop();
+    // release NET_REUSE mutex
+
+    let node : u32 = match reuse {
         Some(index) => index,
         None        => {
             let len = net.nodes.len();
+            // fetch NET_EDIT mutex
             net.nodes.resize(len + 4, 0);
+            // release NET_EDIT mutex
             (len as u32) / 4
         }
     };
+    // fetch NET_EDIT mutex
     net.nodes[port(node, 0) as usize] = port(node, 0);
     net.nodes[port(node, 1) as usize] = port(node, 1);
     net.nodes[port(node, 2) as usize] = port(node, 2);
     net.nodes[port(node, 3) as usize] = kind << 2;
+    // release NET_EDIT mutex
     return node;
 }
 
@@ -73,6 +111,8 @@ pub fn reduce(net : &mut Net) -> Stats {
     let mut next : Port = net.nodes[0];
     let mut prev : Port;
     let mut back : Port;
+    let locks = Arc::new(ReduceLocks::new());
+
     while (next > 0) || (warp.len() > 0) {
         next = if next == 0 { enter(net, port(warp.pop().unwrap(), 2)) } else { next };
         prev = enter(net, next);
