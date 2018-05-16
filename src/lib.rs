@@ -1,5 +1,6 @@
 pub mod term;
 pub mod net;
+pub mod simple_semaphore;
 
 pub fn reduce(code : &str) -> (net::Stats, String) {
     let term = term::from_string(code.as_bytes());
