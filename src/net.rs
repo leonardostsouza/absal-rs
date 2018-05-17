@@ -26,7 +26,8 @@ pub struct Locks {
     warp_queue: Semaphore,
     stats: Mutex<Stats>,
     active_threads: Mutex<u32>,
-    net: Mutex<()>
+    net: Mutex<()>,
+    reuse: Mutex<()>
 }
 
 impl Locks {
@@ -42,45 +43,66 @@ impl Locks {
                 annis: 0
             }),
             active_threads: Mutex::new(0),
-            net: Mutex::new(())
+            net: Mutex::new(()),
+            reuse: Mutex::new(())
         }
     }
 }
 
 pub type Port = u32;
 
-pub fn new_node(net : &mut Net, kind : u32, _locks: Option<Arc<Locks>>) -> u32 {
-    let locks = match _locks {
-        Some(input) => input,
-        None => Arc::new(Locks::new())
+// TODO: Refactor this function to avoid code repetition
+pub fn new_node(net : &mut Net, kind : u32, locks: Option<Arc<Locks>>) -> u32 {
+
+    let reuse = match &locks {
+        &Some(ref lock) => {
+            // acquire NET_REUSE mutex
+            let reuse_lock = lock.reuse.lock().unwrap();
+            net.reuse.pop()
+            // NET_REUSE mutex released
+        },
+        &None => net.reuse.pop()
     };
 
-    // fetch NET_REUSE mutex
-    let net_lock = locks.net.lock().unwrap();
-    let reuse = net.reuse.pop();
-    drop(net_lock);
-    // NET_REUSE mutex released
 
     let node : u32 = match reuse {
         Some(index) => index,
         None        => {
-            let len = net.nodes.len();
-            // fetch NET_EDIT mutex
-            let net_edit = locks.net.lock().unwrap();
-            net.nodes.resize(len + 4, 0);
-            drop(net_edit);
-            // NET_EDIT mutex released
-            (len as u32) / 4
+            match &locks {
+                &Some(ref lock) => {
+                    // acquire NET_EDIT mutex
+                    let net_lock = lock.net.lock().unwrap();
+                    let len = net.nodes.len();
+                    net.nodes.resize(len + 4, 0);
+                    (len as u32) / 4
+                    // NET_EDIT mutex released
+                }
+                &None => {
+                    let len = net.nodes.len();
+                    net.nodes.resize(len + 4, 0);
+                    (len as u32) / 4
+                },
+            }
         }
     };
-    // fetch NET_EDIT mutex
-    let net_edit = locks.net.lock().unwrap();
-    net.nodes[port(node, 0) as usize] = port(node, 0);
-    net.nodes[port(node, 1) as usize] = port(node, 1);
-    net.nodes[port(node, 2) as usize] = port(node, 2);
-    net.nodes[port(node, 3) as usize] = kind << 2;
-    drop(net_edit);
-    // release NET_EDIT mutex
+
+    match &locks {
+        &Some(ref lock) => {
+            // acquire NET_EDIT mutex
+            let net_lock = lock.net.lock().unwrap();
+            net.nodes[port(node, 0) as usize] = port(node, 0);
+            net.nodes[port(node, 1) as usize] = port(node, 1);
+            net.nodes[port(node, 2) as usize] = port(node, 2);
+            net.nodes[port(node, 3) as usize] = kind << 2;
+            // NET_EDIT mutex released
+        }
+        &None => {
+            net.nodes[port(node, 0) as usize] = port(node, 0);
+            net.nodes[port(node, 1) as usize] = port(node, 1);
+            net.nodes[port(node, 2) as usize] = port(node, 2);
+            net.nodes[port(node, 3) as usize] = kind << 2;
+        }
+    }
     return node;
 }
 
