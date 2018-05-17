@@ -2,9 +2,9 @@
 
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use simple_semaphore::*;
+use simple_semaphore::{*};
 
-const MULTITHREADING: bool = true;
+const NTHREADS: u32 = 4;
 
 #[derive(Clone, Debug)]
 pub struct Stats {
@@ -22,16 +22,16 @@ pub struct Net {
 }
 
 pub struct Locks {
-    warp: Mutex<Vec<u32>>,
-    warp_queue: Semaphore,
-    stats: Mutex<Stats>,
-    active_threads: Mutex<u32>,
-    net: Mutex<()>,
-    reuse: Mutex<()>
+    pub warp: Mutex<Vec<u32>>,
+    pub warp_queue: Semaphore,
+    pub stats: Mutex<Stats>,
+    pub active_threads: Mutex<u32>,
+    pub net: RwLock<Net>,
+    //pub reuse: RwLock<()>
 }
 
 impl Locks {
-    pub fn new() -> Locks {
+    pub fn new(net: Net) -> Locks {
         Locks {
             warp: Mutex::new(Vec::new()),
             warp_queue: Semaphore::new(0),
@@ -43,8 +43,8 @@ impl Locks {
                 annis: 0
             }),
             active_threads: Mutex::new(0),
-            net: Mutex::new(()),
-            reuse: Mutex::new(())
+            net: RwLock::new(net),
+            //reuse: RwLock::new(())
         }
     }
 }
@@ -57,8 +57,9 @@ pub fn new_node(net : &mut Net, kind : u32, locks: Option<Arc<Locks>>) -> u32 {
     let reuse = match &locks {
         &Some(ref lock) => {
             // acquire NET_REUSE mutex
-            let reuse_lock = lock.reuse.lock().unwrap();
-            net.reuse.pop()
+            let mut reuse_lock = lock.net.write().unwrap();
+            //net.reuse.pop()
+            reuse_lock.reuse.pop()
             // NET_REUSE mutex released
         },
         &None => net.reuse.pop()
@@ -71,9 +72,9 @@ pub fn new_node(net : &mut Net, kind : u32, locks: Option<Arc<Locks>>) -> u32 {
             match &locks {
                 &Some(ref lock) => {
                     // acquire NET_EDIT mutex
-                    let net_lock = lock.net.lock().unwrap();
-                    let len = net.nodes.len();
-                    net.nodes.resize(len + 4, 0);
+                    let mut net_lock = lock.net.write().unwrap();
+                    let len = net_lock.nodes.len();
+                    net_lock.nodes.resize(len + 4, 0);
                     (len as u32) / 4
                     // NET_EDIT mutex released
                 }
@@ -89,11 +90,11 @@ pub fn new_node(net : &mut Net, kind : u32, locks: Option<Arc<Locks>>) -> u32 {
     match &locks {
         &Some(ref lock) => {
             // acquire NET_EDIT mutex
-            let net_lock = lock.net.lock().unwrap();
-            net.nodes[port(node, 0) as usize] = port(node, 0);
-            net.nodes[port(node, 1) as usize] = port(node, 1);
-            net.nodes[port(node, 2) as usize] = port(node, 2);
-            net.nodes[port(node, 3) as usize] = kind << 2;
+            let mut net_lock = lock.net.write().unwrap();
+            net_lock.nodes[port(node, 0) as usize] = port(node, 0);
+            net_lock.nodes[port(node, 1) as usize] = port(node, 1);
+            net_lock.nodes[port(node, 2) as usize] = port(node, 2);
+            net_lock.nodes[port(node, 3) as usize] = kind << 2;
             // NET_EDIT mutex released
         }
         &None => {
@@ -146,32 +147,38 @@ pub fn link(net : &mut Net, ptr_a : u32, ptr_b : u32) {
 }
 
 // !! UNSAFE !!
-pub fn reduce(net : &mut Net) -> Stats {
-    let mut stats = Stats { loops: 0, rules: 0, betas: 0, dupls: 0, annis: 0 };
-    let mut warp : Vec<u32> = Vec::new();
+pub fn reduce(_locks : Locks) -> (Stats, Net) {
+    //let stats = Stats { loops: 0, rules: 0, betas: 0, dupls: 0, annis: 0 };
+    //let mut warp : Vec<u32> = Vec::new();
+    let mut locks = Arc::new(_locks);
+    let net = locks.net.write().unwrap();
     let mut next : Port = net.nodes[0];
-    let mut prev : Port;
-    let mut back : Port;
-    let locks = Arc::new(Locks::new());
+    drop(net);
+    let mut prev : Port = 0;
+    let mut back : Port = 0;
+    let mut handles = vec![];
 
-    while (next > 0) || (warp.len() > 0) {
-        next = if next == 0 { enter(net, port(warp.pop().unwrap(), 2)) } else { next };
-        prev = enter(net, next);
-        if slot(next) == 0 && slot(prev) == 0 && node(prev) != 0 {
-            stats.rules += 1;
-            back = enter(net, port(node(prev), meta(net, node(prev))));
-            rewrite(net, node(prev), node(next));
-            next = enter(net, back);
-        } else if slot(next) == 0 {
-            warp.push(node(next));
-            next = enter(net, port(node(next), 1));
-        } else {
-            set_meta(net, node(next), slot(next));
-            next = enter(net, port(node(next), 0));
-        }
-        stats.loops += 1;
+    // spawn threads
+    for _ in 1..NTHREADS {
+        let locks = Arc::clone(&locks);
+        //let s_net = Arc::clone(&s_net);
+        handles.push(thread::spawn (move || {
+            thread_alg(locks);
+        }));
     }
-    stats
+
+    while (next > 0) /*|| (warp.len() > 0)*/ {
+        reduce_iteration(/*s_net,*/ &mut next, &mut prev, &mut back, &locks);
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    let stats = locks.stats.lock().unwrap().clone();
+    let net = locks.net.read().unwrap().clone();
+    (stats, net)
+    //stats
 }
 
 // !! UNSAFE !!
@@ -208,49 +215,69 @@ pub fn rewrite(net : &mut Net, x : Port, y : Port) {
 }
 
 // !! UNSAFE !!
-fn thread_alg(net: &mut Net, _next: u32, _prev: u32, _back: u32, warp: &mut Vec<u32>, stats: &mut Stats, active: &mut u32) {
-    let mut next = _next;
-    let mut prev = _prev;
-    let mut back = _back;
+// thread_alg(net, &next, &prev, &back, &mut warp, locks);
+fn thread_alg(/*net: &mut Net, */locks: Arc<Locks>) {
+    let net = locks.net.read().unwrap();
+    let mut next : Port = net.nodes[0];
+    drop(net);
+    let mut prev : Port = 0;
+    let mut back : Port = 0;
     loop {
         // wait on WARP_QUEUE semaphore
         // fetch ACTIVE mutex
-        *active = *active + 1;
+        // add ACTIVE counter
         // release ACTIVE mutex
-        while (next > 0) || (warp.len() > 0) {
-            // fetch  WARP_EDIT mutex
-            if (next == 0) && (warp.len() > 0) {
-                next = enter_port(net, port(warp.pop().unwrap(), 2));
-            }
-            // release WARP_EDIT mutex
-            prev = enter_port(net, next);
-            next = enter_port(net, prev);
 
-            if get_port_slot(next) == 0 && get_port_slot(prev) == 0 && get_port_node(prev) != 0 {
-                // fetch STATS mutex
-                stats.rules = stats.rules + 1;
-                // release STATS mutex
-                back = enter_port(net, port(get_port_node(prev), get_node_meta(net, get_port_node(prev))));
-                rewrite(net, get_port_node(prev), get_port_node(next));
-                next = enter_port(net, back);
-            } else if get_port_slot(next) == 0 {
-                // fetch WARP_EDIT mutex
-                warp.push(get_port_node(next));
-                // release WARP_EDIT semaphore
-                // signal WARP_QUEUE semaphore
-                next = enter_port(net, port(get_port_node(next), 1));
-            } else {
-                // fetch NET_EDIT(node(next)) mutex
-                set_node_meta(net, get_port_node(next), get_port_slot(next));
-                next = enter_port(net, port(get_port_node(next), 0));
-            }
-            // fetch STATS mutex
-            stats.loops = stats.loops + 1;
-            // release STATS mutex
+        while (next > 0)/* || (warp.len() > 0)*/ {
+            reduce_iteration(/*net, */&mut next, &mut prev, &mut back, &locks);
         }
+
         // fetch ACTIVE mutex
-        *active = *active - 1;
+        // subtract ACTIVE counter
         // release ACTIVE mutex
     }
 
+}
+
+
+fn reduce_iteration(/*net: &mut Net, */next: &mut u32, prev: &mut u32, back: &mut u32, locks: &Arc<Locks>) {
+        *next = if *next == 0 {
+            let index = {
+                //acquire WARP Mutex
+                //warp.pop().unwrap()
+                // WARP mutex released
+                0
+            };
+            let net = locks.net.read().unwrap();
+            enter(&net, port(index, 2))
+        }
+        else {
+            *next
+        };
+        let net = locks.net.read().unwrap();
+        *prev = enter(&net, *next);
+        drop(net);
+        if slot(*next) == 0 && slot(*prev) == 0 && node(*prev) != 0 {
+            // acquire STATS mutex
+            //stats.rules += 1;
+            // STATS mutex released
+            let mut net = locks.net.write().unwrap();
+            *back = enter(&net, port(node(*prev), meta(&net, node(*prev))));
+            rewrite(&mut net, node(*prev), node(*next));
+            *next = enter(&net, *back);
+        } else if slot(*next) == 0 {
+            // aquire WARP mutex
+            //warp.push(node(*next));
+            // WARP mutex released
+            // signal WARP_QUEUE semaphore
+            let net = locks.net.read().unwrap();
+            *next = enter(&net, port(node(*next), 1));
+        } else {
+            let mut net = locks.net.write().unwrap();
+            set_meta(&mut net, node(*next), slot(*next));
+            *next = enter(&net, port(node(*next), 0));
+        }
+        // acquire STATS mutex
+        //stats.loops += 1;
+        // STATS mutex released
 }
