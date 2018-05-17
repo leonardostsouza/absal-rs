@@ -118,28 +118,34 @@ pub fn slot(port : Port) -> u32 {
     port & 3
 }
 
+// !! UNSAFE !!
 pub fn enter(net : &Net, port : Port) -> Port {
     net.nodes[port as usize]
 }
 
+// !! UNSAFE !!
 pub fn kind(net : &Net, node : u32) -> u32 {
     net.nodes[port(node, 3) as usize] >> 2
 }
 
+// !! UNSAFE !!
 pub fn meta(net : &Net, node : u32) -> u32 {
     net.nodes[port(node, 3) as usize] & 3
 }
 
+// !! UNSAFE !!
 pub fn set_meta(net : &mut Net, node : u32, meta : u32) {
     let ptr = port(node, 3) as usize;
     net.nodes[ptr] = net.nodes[ptr] & 0xFFFFFFFC | meta;
 }
 
+// !! UNSAFE !!
 pub fn link(net : &mut Net, ptr_a : u32, ptr_b : u32) {
     net.nodes[ptr_a as usize] = ptr_b;
     net.nodes[ptr_b as usize] = ptr_a;
 }
 
+// !! UNSAFE !!
 pub fn reduce(net : &mut Net) -> Stats {
     let mut stats = Stats { loops: 0, rules: 0, betas: 0, dupls: 0, annis: 0 };
     let mut warp : Vec<u32> = Vec::new();
@@ -168,6 +174,7 @@ pub fn reduce(net : &mut Net) -> Stats {
     stats
 }
 
+// !! UNSAFE !!
 pub fn rewrite(net : &mut Net, x : Port, y : Port) {
     if kind(net, x) == kind(net, y) {
         let p0 = enter(net, port(x, 1));
@@ -198,4 +205,52 @@ pub fn rewrite(net : &mut Net, x : Port, y : Port) {
         set_meta(net, x, 0);
         set_meta(net, y, 0);
     }
+}
+
+// !! UNSAFE !!
+fn thread_alg(net: &mut Net, _next: u32, _prev: u32, _back: u32, warp: &mut Vec<u32>, stats: &mut Stats, active: &mut u32) {
+    let mut next = _next;
+    let mut prev = _prev;
+    let mut back = _back;
+    loop {
+        // wait on WARP_QUEUE semaphore
+        // fetch ACTIVE mutex
+        *active = *active + 1;
+        // release ACTIVE mutex
+        while (next > 0) || (warp.len() > 0) {
+            // fetch  WARP_EDIT mutex
+            if (next == 0) && (warp.len() > 0) {
+                next = enter_port(net, port(warp.pop().unwrap(), 2));
+            }
+            // release WARP_EDIT mutex
+            prev = enter_port(net, next);
+            next = enter_port(net, prev);
+
+            if get_port_slot(next) == 0 && get_port_slot(prev) == 0 && get_port_node(prev) != 0 {
+                // fetch STATS mutex
+                stats.rules = stats.rules + 1;
+                // release STATS mutex
+                back = enter_port(net, port(get_port_node(prev), get_node_meta(net, get_port_node(prev))));
+                rewrite(net, get_port_node(prev), get_port_node(next));
+                next = enter_port(net, back);
+            } else if get_port_slot(next) == 0 {
+                // fetch WARP_EDIT mutex
+                warp.push(get_port_node(next));
+                // release WARP_EDIT semaphore
+                // signal WARP_QUEUE semaphore
+                next = enter_port(net, port(get_port_node(next), 1));
+            } else {
+                // fetch NET_EDIT(node(next)) mutex
+                set_node_meta(net, get_port_node(next), get_port_slot(next));
+                next = enter_port(net, port(get_port_node(next), 0));
+            }
+            // fetch STATS mutex
+            stats.loops = stats.loops + 1;
+            // release STATS mutex
+        }
+        // fetch ACTIVE mutex
+        *active = *active - 1;
+        // release ACTIVE mutex
+    }
+
 }
