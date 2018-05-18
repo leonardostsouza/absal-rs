@@ -197,7 +197,7 @@ pub fn to_net(term : &Term) -> Net {
     fn encode(net : &mut Net, _kind : &mut u32, scope : &mut Vec<u32>, term : &Term) -> Port {
         match term {
             &App{ref fun, ref arg} => {
-                let app = new_node(net, 1, None);
+                let app = new_node(net, 1);
                 let fun = encode(net, _kind, scope, fun);
                 link(net, port(app, 0), fun);
                 let arg = encode(net, _kind, scope, arg);
@@ -205,8 +205,8 @@ pub fn to_net(term : &Term) -> Net {
                 port(app, 2)
             },
             &Lam{ref bod} => {
-                let fun = new_node(net, 1, None);
-                let era = new_node(net, 0, None);
+                let fun = new_node(net, 1);
+                let era = new_node(net, 0);
                 link(net, port(fun, 1), port(era, 0));
                 link(net, port(era, 1), port(era, 2));
                 scope.push(fun);
@@ -223,7 +223,7 @@ pub fn to_net(term : &Term) -> Net {
                     port(lam, 1)
                 } else {
                     *_kind += 1;
-                    let dup = new_node(net, *_kind, None);
+                    let dup = new_node(net, *_kind);
                     link(net, port(dup, 2), arg);
                     link(net, port(dup, 0), port(lam, 1));
                     port(dup, 1)

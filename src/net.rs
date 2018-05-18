@@ -51,60 +51,20 @@ impl Locks {
 
 pub type Port = u32;
 
-// TODO: Refactor this function to avoid code repetition
 // !! THREAD UNSAFE !!
-pub fn new_node(net : &mut Net, kind : u32, locks: Option<Arc<Locks>>) -> u32 {
-
-    let reuse = match &locks {
-        &Some(ref lock) => {
-            // acquire NET_REUSE mutex
-            let mut reuse_lock = lock.net.write().unwrap();
-            //net.reuse.pop()
-            reuse_lock.reuse.pop()
-            // NET_REUSE mutex released
-        },
-        &None => net.reuse.pop()
-    };
-
-
-    let node : u32 = match reuse {
+pub fn new_node(net : &mut Net, kind : u32) -> u32 {
+    let node : u32 = match net.reuse.pop() {
         Some(index) => index,
         None        => {
-            match &locks {
-                &Some(ref lock) => {
-                    // acquire NET_EDIT mutex
-                    let mut net_lock = lock.net.write().unwrap();
-                    let len = net_lock.nodes.len();
-                    net_lock.nodes.resize(len + 4, 0);
-                    (len as u32) / 4
-                    // NET_EDIT mutex released
-                }
-                &None => {
-                    let len = net.nodes.len();
-                    net.nodes.resize(len + 4, 0);
-                    (len as u32) / 4
-                },
-            }
+            let len = net.nodes.len();
+            net.nodes.resize(len + 4, 0);
+            (len as u32) / 4
         }
     };
-
-    match &locks {
-        &Some(ref lock) => {
-            // acquire NET_EDIT mutex
-            let mut net_lock = lock.net.write().unwrap();
-            net_lock.nodes[port(node, 0) as usize] = port(node, 0);
-            net_lock.nodes[port(node, 1) as usize] = port(node, 1);
-            net_lock.nodes[port(node, 2) as usize] = port(node, 2);
-            net_lock.nodes[port(node, 3) as usize] = kind << 2;
-            // NET_EDIT mutex released
-        }
-        &None => {
-            net.nodes[port(node, 0) as usize] = port(node, 0);
-            net.nodes[port(node, 1) as usize] = port(node, 1);
-            net.nodes[port(node, 2) as usize] = port(node, 2);
-            net.nodes[port(node, 3) as usize] = kind << 2;
-        }
-    }
+    net.nodes[port(node, 0) as usize] = port(node, 0);
+    net.nodes[port(node, 1) as usize] = port(node, 1);
+    net.nodes[port(node, 2) as usize] = port(node, 2);
+    net.nodes[port(node, 3) as usize] = kind << 2;
     return node;
 }
 
@@ -151,7 +111,7 @@ pub fn link(net : &mut Net, ptr_a : u32, ptr_b : u32) {
 pub fn reduce(_locks : Locks) -> (Stats, Net) {
     //let stats = Stats { loops: 0, rules: 0, betas: 0, dupls: 0, annis: 0 };
     //let mut warp : Vec<u32> = Vec::new();
-    let mut locks = Arc::new(_locks);
+    let locks = Arc::new(_locks);
     let net = locks.net.write().unwrap();
     let mut next : Port = net.nodes[0];
     drop(net);
@@ -225,8 +185,8 @@ pub fn rewrite(locks : &Arc<Locks>, x : Port, y : Port) {
 
         // acquire NET_WRITE RwLock
         let mut net = locks.net.write().unwrap();
-        let a = new_node(&mut net, tx, None); // <-------- Should receive Some(lock)!
-        let b = new_node(&mut net, ty, None); // <-------- Should receive Some(lock)!
+        let a = new_node(&mut net, tx);
+        let b = new_node(&mut net, ty);
 
         link(&mut net, port(b, 0), px1);
         link(&mut net, port(y, 0), px2);
