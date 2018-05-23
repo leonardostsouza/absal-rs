@@ -110,21 +110,13 @@ pub fn link(net : &mut Net, ptr_a : u32, ptr_b : u32) {
 
 
 pub fn reduce(_locks : Locks) -> (Stats, Net) {
-    //let stats = Stats { loops: 0, rules: 0, betas: 0, dupls: 0, annis: 0 };
-    //let mut warp : Vec<u32> = Vec::new();
     let locks = Arc::new(_locks);
-    let net = locks.net.write().unwrap();
+    let net = locks.net.read().unwrap();
     let mut next : Port = net.nodes[0];
     drop(net);
     let mut prev : Port = 0;
     let mut back : Port = 0;
     let mut handles = vec![];
-
-    println!("Entering first while loop");
-    while next > 0 /*|| (warp.len() > 0)*/ {
-        //println!("next = {:?}", next);
-        reduce_iteration(&mut next, &mut prev, &mut back, &locks);
-    }
 
     println!("Creating threads");
     // spawn threads
@@ -135,8 +127,14 @@ pub fn reduce(_locks : Locks) -> (Stats, Net) {
         }));
     }
 
+    println!("Entering first while loop");
+    while next > 0 {
+        //println!("next = {:?}", next);
+        reduce_iteration(&locks, &mut next, &mut prev, &mut back);
+    }
+
     // WAIT FOR THREADS TO FINISH
-    thread::sleep(time::Duration::new(5, 0));
+    thread::sleep(time::Duration::new(3, 0));
     /*for handle in handles {
         let _ = handle.join();
     }*/
@@ -256,13 +254,8 @@ pub fn rewrite(net : &mut Net, x : Port, y : Port) {
 }
 
 
-fn thread_alg(/*net: &mut Net, */locks: Arc<Locks>) {
+fn thread_alg(locks: Arc<Locks>) {
     println!("========THREAD STARTED!!");
-    // acquire NET_READ RwLock
-    //let net = locks.net.read().unwrap();
-    //let mut next : Port = net.nodes[0];
-    //drop(net);
-    // NET_READ RwLock released
     let mut next : Port = 0;
     let mut prev : Port = 0;
     let mut back : Port = 0;
@@ -270,6 +263,7 @@ fn thread_alg(/*net: &mut Net, */locks: Arc<Locks>) {
         // wait on WARP_QUEUE semaphore
         locks.warp_queue.wait();
         println!("========THREAD Working....");
+
         // fetch ACTIVE mutex
         let mut active = locks.active_threads.lock().unwrap();
         *active += 1;
@@ -278,7 +272,7 @@ fn thread_alg(/*net: &mut Net, */locks: Arc<Locks>) {
 
         // "Black Magic" do-while loop
         while {
-            reduce_iteration(&mut next, &mut prev, &mut back, &locks);
+            reduce_iteration(&locks, &mut next, &mut prev, &mut back);
             next > 0
         }{}
 
@@ -291,10 +285,9 @@ fn thread_alg(/*net: &mut Net, */locks: Arc<Locks>) {
 }
 
 
-fn reduce_iteration(/*net: &mut Net, */next: &mut u32, prev: &mut u32, back: &mut u32, locks: &Arc<Locks>) {
+fn reduce_iteration(locks: &Arc<Locks>, next: &mut u32, prev: &mut u32, back: &mut u32) {
 
-    let mut net = locks.net.write().unwrap();
-
+    //let mut net = locks.net.write().unwrap();
         *next = if *next == 0 {
             let index = {
                 //acquire WARP Mutex
@@ -302,16 +295,20 @@ fn reduce_iteration(/*net: &mut Net, */next: &mut u32, prev: &mut u32, back: &mu
                 warp.pop().unwrap()
                 // WARP mutex released
             };
-            //let net = locks.net.read().unwrap();
+            let net = locks.net.read().unwrap();
             enter(&net, port(index, 2))
         }
         else {
             *next
         };
-        //let net = locks.net.read().unwrap();
+        //acquire NET_READ Mutex
+        let net = locks.net.read().unwrap();
         *prev = enter(&net, *next);
-        //drop(net);
+        drop(net);
+        // NET_READ Mutex released
         if slot(*next) == 0 && slot(*prev) == 0 && node(*prev) != 0 {
+            ///////////// PROBLEMATIC CODE ///////////////
+            let mut net = locks.net.write().unwrap();
             // acquire STATS mutex
             let mut stats = locks.stats.lock().unwrap();
             stats.rules += 1;
@@ -320,7 +317,7 @@ fn reduce_iteration(/*net: &mut Net, */next: &mut u32, prev: &mut u32, back: &mu
 
             // acquire NET_READ RwLock
             //let net = locks.net.read().unwrap();
-        //    let mut net = locks.net.write().unwrap();
+            //let mut net = locks.net.write().unwrap();
             *back = enter(&net, port(node(*prev), meta(&net, node(*prev))));
             //drop(net);
             // NET_READ RwLock released
@@ -331,7 +328,7 @@ fn reduce_iteration(/*net: &mut Net, */next: &mut u32, prev: &mut u32, back: &mu
             //let net = locks.net.read().unwrap();
             *next = enter(&net, *back);
             // NET_READ RwLock released
-
+            ///////////// END PROBLEMATIC CODE ///////////////
         }
         else if slot(*next) == 0 {
             // aquire WARP mutex
@@ -344,19 +341,19 @@ fn reduce_iteration(/*net: &mut Net, */next: &mut u32, prev: &mut u32, back: &mu
             locks.warp_queue.signal();
 
             // acquire NET_READ RwLock
-//            let net = locks.net.read().unwrap();
+            let net = locks.net.read().unwrap();
             *next = enter(&net, port(node(*next), 1));
             // NET_READ RwLock released
         }
         else {
             // acquire NET_WRITE RwLock
-//            let mut net = locks.net.write().unwrap();
+            let mut net = locks.net.write().unwrap();
             set_meta(&mut net, node(*next), slot(*next));
-//            drop(net);
+            drop(net);
             // NET_WRITE RwLock released
 
             // acquire NET_READ RwLock
-//            let net = locks.net.read().unwrap();
+            let net = locks.net.read().unwrap();
             *next = enter(&net, port(node(*next), 0));
             // NET_READ RwLock released
         }
