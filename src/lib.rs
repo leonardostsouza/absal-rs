@@ -7,6 +7,7 @@ pub fn reduce(code : &str) -> (net::Stats, String) {
     //let net = term::to_net(&term);
 
     let locks = net::Locks::new(term::to_net(&term));
+    println!("Iniciating reduce()");
     let resp = net::reduce(locks);
 
     //let stats = net::reduce(&net);
