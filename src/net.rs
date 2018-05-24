@@ -118,19 +118,25 @@ pub fn reduce(_locks : Locks) -> (Stats, Net) {
     let mut prev : Port = 0;
     let mut back : Port = 0;
 
-    println!("Creating threads");
+    // spawn threads
+    /*for _ in 0..NTHREADS {
+        let locks = Arc::clone(&locks);
+        handles.push(thread::spawn (move || {
+            thread_alg(locks);
+        }));
+    }*/
+
+    while next > 0 {
+        //println!("next = {:?}", next);
+        reduce_iteration(&locks, &mut next, &mut prev, &mut back);
+    }
+
     // spawn threads
     for _ in 0..NTHREADS {
         let locks = Arc::clone(&locks);
         handles.push(thread::spawn (move || {
             thread_alg(locks);
         }));
-    }
-
-    println!("Entering first while loop");
-    while next > 0 {
-        //println!("next = {:?}", next);
-        reduce_iteration(&locks, &mut next, &mut prev, &mut back);
     }
 
     // WAIT FOR THREADS TO FINISH
@@ -145,7 +151,7 @@ pub fn reduce(_locks : Locks) -> (Stats, Net) {
     //stats
 }
 
-pub fn rewrite(locks : &Arc<Locks>, x : Port, y : Port) {
+fn rewrite(locks : &Arc<Locks>, x : Port, y : Port) {
     // acquire NET_READ Mutex
     let net = locks.net.read().unwrap();
     if kind(&net, x) == kind(&net, y) {
@@ -195,7 +201,7 @@ pub fn rewrite(locks : &Arc<Locks>, x : Port, y : Port) {
 }
 
 
-pub fn rewrite2(net : &mut Net, x : Port, y : Port) {
+fn rewrite2(net : &mut Net, x : Port, y : Port) {
     if kind(net, x) == kind(net, y) {
         let p0 = enter(net, port(x, 1));
         let p1 = enter(net, port(y, 1));
@@ -229,7 +235,7 @@ pub fn rewrite2(net : &mut Net, x : Port, y : Port) {
 
 
 fn thread_alg(locks: Arc<Locks>) {
-    println!("========THREAD STARTED!!");
+    println!("THREAD STARTED!!");
     let mut next : Port = 0;
     let mut prev : Port = 0;
     let mut back : Port = 0;
