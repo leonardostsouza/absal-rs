@@ -111,12 +111,12 @@ pub fn link(net : &mut Net, ptr_a : u32, ptr_b : u32) {
 
 pub fn reduce(_locks : Locks) -> (Stats, Net) {
     let locks = Arc::new(_locks);
+    let mut handles = vec![];
     let net = locks.net.read().unwrap();
     let mut next : Port = net.nodes[0];
     drop(net);
     let mut prev : Port = 0;
     let mut back : Port = 0;
-    let mut handles = vec![];
 
     println!("Creating threads");
     // spawn threads
@@ -145,65 +145,39 @@ pub fn reduce(_locks : Locks) -> (Stats, Net) {
     //stats
 }
 
-/*
 pub fn rewrite(locks : &Arc<Locks>, x : Port, y : Port) {
-    println!("Rewrite!");
-    // acquire NET_READ RwLock
+    // acquire NET_READ Mutex
     let net = locks.net.read().unwrap();
-    let kx = kind(&net, x);
-    let ky = kind(&net, y);
-    drop(net);
-    println!("\tkx = {:?}; ky = {:?}", kx, ky);
-    // NET_READ RwLock released
-
-    if kx == ky {
-        println!("\tRewrite if...");
-        // acquire NET_READ RwLock
-        //let net = locks.net.read().unwrap();
-        let mut net = locks.net.write().unwrap();
-        /*let px1 = enter(&net, port(x, 1));
+    if kind(&net, x) == kind(&net, y) {
+        let px1 = enter(&net, port(x, 1));
         let py1 = enter(&net, port(y, 1));
         let px2 = enter(&net, port(x, 2));
         let py2 = enter(&net, port(y, 2));
-        //drop(net);
-        // NET_READ RwLock released
+        drop(net);
+        // NET_READ Mutex Released
 
-        println!("\tpx1 = {:?}; px2 = {:?}; py1 = {:?}; py2 = {:?}", px1, px2, py1, py2);
-
-        // acquire NET_WRITE RwLock
-        //let mut net = locks.net.write().unwrap();
+        // acquire NET_WRITE Mutex
+        let mut net = locks.net.write().unwrap();
         link(&mut net, px1, py1);
-        link(&mut net, px2, py2);*/
-
-        let p0 = enter(&net, port(x, 1));
-        let p1 = enter(&net, port(y, 1));
-        link(&mut net, p0, p1);
-        let p0 = enter(&net, port(x, 2));
-        let p1 = enter(&net, port(y, 2));
-        link(&mut net, p0, p1);
-
+        link(&mut net, px2, py2);
         net.reuse.push(x);
         net.reuse.push(y);
-        // NET_WRITE RwLock released
-
-    } else {
-        println!("\tRewrite else...");
-        // acquire NET_READ RwLock
-        let net = locks.net.read().unwrap();
-        let tx = kind(&net, x);
-        let ty = kind(&net, y);
-
+        // NET_WRITE Mutex Released
+    }
+    else {
+        let ta = kind(&net, x);
+        let tb = kind(&net, y);
         let px1 = enter(&net, port(x, 1));
         let px2 = enter(&net, port(x, 2));
         let py1 = enter(&net, port(y, 1));
         let py2 = enter(&net, port(y, 2));
         drop(net);
-        // NET_READ RwLock released
+        // NET_READ Mutex Released
 
-        // acquire NET_WRITE RwLock
+        // acquire NET_WRITE Mutex
         let mut net = locks.net.write().unwrap();
-        let a = new_node(&mut net, tx);
-        let b = new_node(&mut net, ty);
+        let a = new_node(&mut net, ta);
+        let b = new_node(&mut net, tb);
 
         link(&mut net, port(b, 0), px1);
         link(&mut net, port(y, 0), px2);
@@ -214,14 +188,14 @@ pub fn rewrite(locks : &Arc<Locks>, x : Port, y : Port) {
         link(&mut net, port(a, 2), port(y, 1));
         link(&mut net, port(x, 1), port(b, 2));
         link(&mut net, port(x, 2), port(y, 2));
-
         set_meta(&mut net, x, 0);
         set_meta(&mut net, y, 0);
-        // NET_WRITE RwLock released
+        // NET_WRITE Mutex Released
     }
-}*/
+}
 
-pub fn rewrite(net : &mut Net, x : Port, y : Port) {
+
+pub fn rewrite2(net : &mut Net, x : Port, y : Port) {
     if kind(net, x) == kind(net, y) {
         let p0 = enter(net, port(x, 1));
         let p1 = enter(net, port(y, 1));
@@ -308,7 +282,7 @@ fn reduce_iteration(locks: &Arc<Locks>, next: &mut u32, prev: &mut u32, back: &m
         // NET_READ Mutex released
         if slot(*next) == 0 && slot(*prev) == 0 && node(*prev) != 0 {
             ///////////// PROBLEMATIC CODE ///////////////
-            let mut net = locks.net.write().unwrap();
+//            let mut net = locks.net.write().unwrap();
             // acquire STATS mutex
             let mut stats = locks.stats.lock().unwrap();
             stats.rules += 1;
@@ -316,16 +290,19 @@ fn reduce_iteration(locks: &Arc<Locks>, next: &mut u32, prev: &mut u32, back: &m
             // STATS mutex released
 
             // acquire NET_READ RwLock
-            //let net = locks.net.read().unwrap();
+            let net = locks.net.read().unwrap();
             //let mut net = locks.net.write().unwrap();
             *back = enter(&net, port(node(*prev), meta(&net, node(*prev))));
-            //drop(net);
+            drop(net);
             // NET_READ RwLock released
 
-            //rewrite(&locks, node(*prev), node(*next)); //thread_safe
-            rewrite(&mut net, node(*prev), node(*next));
+            rewrite(&locks, node(*prev), node(*next)); //thread_safe
+            //let mut net = locks.net.write().unwrap();
+            //rewrite2(&mut net, node(*prev), node(*next));
+            //drop(net);
+
             // acquire NET_READ RwLock
-            //let net = locks.net.read().unwrap();
+            let net = locks.net.read().unwrap();
             *next = enter(&net, *back);
             // NET_READ RwLock released
             ///////////// END PROBLEMATIC CODE ///////////////
